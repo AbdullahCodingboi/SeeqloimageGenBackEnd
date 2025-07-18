@@ -100,8 +100,6 @@ import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import { GoogleGenAI, Modality } from "@google/genai";
-// Remove fs import for production
-// import * as fs from "node:fs";
 import geminiRoute from './routes/Gemini.js';
 
 dotenv.config();
@@ -149,7 +147,25 @@ app.get("/", (req, res) => {
   });
 });
 
-// 🖼️ IMAGE GENERATION ENDPOINT
+// 🔍 List available models endpoint (helpful for debugging)
+app.get("/models", async (req, res) => {
+  try {
+    const models = await ai.listModels();
+    res.json({
+      message: "Available models",
+      models: models.map(model => ({
+        name: model.name,
+        displayName: model.displayName,
+        description: model.description
+      }))
+    });
+  } catch (error) {
+    console.error("Error listing models:", error);
+    res.status(500).json({ error: "Failed to list models" });
+  }
+});
+
+// 🖼️ IMAGE GENERATION ENDPOINT - Using Gemini 2.0 Flash Experimental
 app.post("/generate-image", async (req, res) => {
   try {
     const { prompt, style, numberOfImages = 1 } = req.body;
@@ -174,9 +190,9 @@ app.post("/generate-image", async (req, res) => {
 
     console.log(`🎨 Generating ${numberOfImages} image(s) with prompt: ${styledPrompt}`);
 
-    // METHOD 1: Using Gemini with image generation (your original approach)
+    // METHOD 1: Using Gemini 2.0 Flash Experimental (correct model name)
     const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-preview-image-generation",
+      model: "gemini-2.0-flash-exp", // ✅ Fixed: Using the correct experimental model
       contents: styledPrompt,
       config: {
         responseModalities: [Modality.TEXT, Modality.IMAGE],
@@ -222,18 +238,22 @@ app.post("/generate-image", async (req, res) => {
       errorMessage = "API quota exceeded";
       statusCode = 429;
     } else if (err.message.includes("model")) {
-      errorMessage = "Model not available";
+      errorMessage = "Model not available. Try using Imagen instead.";
       statusCode = 400;
+    } else if (err.message.includes("404")) {
+      errorMessage = "Model not found. The experimental model might not be available in your region.";
+      statusCode = 404;
     }
 
     res.status(statusCode).json({ 
       error: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+      suggestion: "Try the /generate-image-imagen endpoint instead"
     });
   }
 });
 
-// 🔄 Alternative endpoint using Imagen (if you want to try the new method)
+// 🎨 Alternative endpoint using Imagen 3 (more stable)
 app.post("/generate-image-imagen", async (req, res) => {
   try {
     const { prompt, numberOfImages = 1 } = req.body;
@@ -244,11 +264,11 @@ app.post("/generate-image-imagen", async (req, res) => {
       });
     }
 
-    console.log(`🎨 Generating ${numberOfImages} image(s) with Imagen: ${prompt}`);
+    console.log(`🎨 Generating ${numberOfImages} image(s) with Imagen 3: ${prompt}`);
 
-    // METHOD 2: Using Imagen directly (new approach)
+    // METHOD 2: Using Imagen 3 (more stable and reliable)
     const response = await ai.models.generateImages({
-      model: 'imagen-3.0-generate-001', // Use available model
+      model: 'imagen-3.0-generate-001', // ✅ Using Imagen 3
       prompt: prompt,
       config: {
         numberOfImages: Math.min(numberOfImages, 4),
@@ -263,7 +283,7 @@ app.post("/generate-image-imagen", async (req, res) => {
     }
 
     res.json({
-      message: "🖼️ Images generated successfully with Imagen!",
+      message: "🖼️ Images generated successfully with Imagen 3!",
       images: images,
       count: images.length,
       timestamp: new Date().toISOString()
@@ -271,8 +291,57 @@ app.post("/generate-image-imagen", async (req, res) => {
 
   } catch (err) {
     console.error("❌ Error generating image with Imagen:", err);
+    
+    let errorMessage = "Failed to generate image with Imagen.";
+    let statusCode = 500;
+    
+    if (err.message.includes("billing")) {
+      errorMessage = "Imagen requires a paid Google Cloud account with billing enabled.";
+      statusCode = 402;
+    } else if (err.message.includes("quota")) {
+      errorMessage = "API quota exceeded";
+      statusCode = 429;
+    }
+    
+    res.status(statusCode).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// 🎨 Fallback endpoint using standard Gemini with image understanding (if above fails)
+app.post("/generate-image-fallback", async (req, res) => {
+  try {
+    const { prompt } = req.body;
+
+    if (!prompt || prompt.trim().length < 5) {
+      return res.status(400).json({ 
+        error: "Prompt is required and must be meaningful." 
+      });
+    }
+
+    console.log(`🎨 Attempting fallback image generation: ${prompt}`);
+
+    // METHOD 3: Using standard Gemini models (fallback)
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash", // Standard Gemini 2.0 Flash
+      contents: `Create a detailed description for generating an image: ${prompt}. Provide a comprehensive visual description that could be used by an image generation AI.`,
+    });
+
+    const description = response.candidates[0].content.parts[0].text;
+
+    res.json({
+      message: "🖼️ Image description generated (fallback mode)",
+      description: description,
+      note: "This is a text description. For actual image generation, use the primary endpoints.",
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error("❌ Error in fallback mode:", err);
     res.status(500).json({ 
-      error: "Failed to generate image with Imagen.",
+      error: "All image generation methods failed.",
       details: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
@@ -285,6 +354,11 @@ app.use("/api/gemini", geminiRoute);
 app.listen(PORT, () => {
   console.log(`🔥 Server running at http://localhost:${PORT}`);
   console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🎨 Available endpoints:`);
+  console.log(`   - POST /generate-image (Gemini 2.0 Flash Experimental)`);
+  console.log(`   - POST /generate-image-imagen (Imagen 3)`);
+  console.log(`   - POST /generate-image-fallback (Text description)`);
+  console.log(`   - GET /models (List available models)`);
   
   // Check for required environment variables
   if (!process.env.GEMINI_API_KEY) {
