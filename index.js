@@ -107,10 +107,26 @@ dotenv.config();
 const app = express();
 
 // 🌐 CORS Configuration
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://localhost:5175",
+  "http://localhost:5176",
+  "https://seeqlo.com",
+  "https://seeqlo-dev.vercel.app",
+  // Add more as needed
+];
+
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? process.env.FRONTEND_URL || "https://seeqlo.com"
-    : "http://localhost:5173",
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error("⛔ CORS blocked: Origin not allowed"));
+    }
+  },
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "x-api-secret"],
 }));
