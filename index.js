@@ -114,6 +114,7 @@ const allowedOrigins = [
   "http://localhost:5176",
   "https://seeqlo.com",
   "https://seeqlo-dev.vercel.app",
+  "https://seeqloimagegen.netlify.app/"
   // Add more as needed
 ];
 
