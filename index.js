@@ -99,7 +99,7 @@
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import geminiRoute from './routes/Gemini.js';
 
 dotenv.config();
@@ -109,7 +109,7 @@ const app = express();
 // 🌐 CORS Configuration
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
-    ? process.env.FRONTEND_URL || "https://your-frontend-domain.com"
+    ? process.env.FRONTEND_URL || "https://seeqlo.com"
     : "http://localhost:5173",
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "x-api-secret"],
@@ -134,9 +134,9 @@ app.use((req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 
-// ✅ Initialize Google AI with proper API key
+// ✅ Initialize Google AI with VERTEX_KEY
 const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
+  apiKey: process.env.VERTEX_KEY,
 });
 
 // 🎨 Health check
@@ -165,7 +165,7 @@ app.get("/models", async (req, res) => {
   }
 });
 
-// 🖼️ IMAGE GENERATION ENDPOINT - Using Gemini 2.0 Flash Experimental
+// 🖼️ IMAGE GENERATION ENDPOINT - Using Imagen 4.0
 app.post("/generate-image", async (req, res) => {
   try {
     const { prompt, style, numberOfImages = 1 } = req.body;
@@ -176,87 +176,84 @@ app.post("/generate-image", async (req, res) => {
       });
     }
 
-    // Validate number of images
-    if (numberOfImages < 1 || numberOfImages > 4) {
-      return res.status(400).json({ 
-        error: "Number of images must be between 1 and 4" 
-      });
-    }
+    // Validate number of images (Imagen 4.0 supports up to 4)
+    const imageCount = Math.min(Math.max(numberOfImages, 1), 4);
 
     // Style the prompt if needed
     const styledPrompt = style && style !== "none"
       ? `Generate an image in the style of "${style}". ${prompt}`
       : prompt;
 
-    console.log(`🎨 Generating ${numberOfImages} image(s) with prompt: ${styledPrompt}`);
+    console.log(`🎨 Generating ${imageCount} image(s) with Imagen 4.0: ${styledPrompt}`);
 
-    // METHOD 1: Using Gemini 2.0 Flash Experimental (correct model name)
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-preview-image-generation", // ✅ Fixed: Using the correct experimental model
-      contents: styledPrompt,
+    // Using Imagen 4.0 Generate Preview
+    const response = await ai.models.generateImages({
+      model: 'imagen-4.0-generate-preview-06-06',
+      prompt: styledPrompt,
       config: {
-        responseModalities: [Modality.TEXT, Modality.IMAGE],
+        numberOfImages: imageCount,
       },
     });
 
-    const parts = response.candidates[0].content.parts;
-
-    let textResponse = "";
-    let imageBuffer = null;
-
-    for (const part of parts) {
-      if (part.text) {
-        textResponse = part.text;
-      } else if (part.inlineData) {
-        imageBuffer = Buffer.from(part.inlineData.data, "base64");
-      }
+    // Process generated images
+    const images = [];
+    let idx = 1;
+    
+    for (const generatedImage of response.generatedImages) {
+      const imgBytes = generatedImage.image.imageBytes;
+      const base64Image = `data:image/png;base64,${imgBytes}`;
+      images.push({
+        id: idx,
+        data: base64Image,
+        filename: `imagen-${idx}.png`
+      });
+      idx++;
     }
 
-    if (!imageBuffer) {
-      return res.status(500).json({ error: "No image generated" });
-    }
-
-    // ✅ Return image data without saving to disk
     res.json({
-      message: "🖼️ Image generated successfully!",
-      description: textResponse,
-      image: `data:image/png;base64,${imageBuffer.toString("base64")}`,
+      message: `🖼️ ${images.length} image(s) generated successfully with Imagen 4.0!`,
+      prompt: styledPrompt,
+      images: images,
+      count: images.length,
+      model: "imagen-4.0-generate-preview-06-06",
       timestamp: new Date().toISOString()
     });
 
   } catch (err) {
-    console.error("❌ Error generating image:", err);
+    console.error("❌ Error generating image with Imagen 4.0:", err);
     
-    // More detailed error handling
-    let errorMessage = "Failed to generate image.";
+    let errorMessage = "Failed to generate image with Imagen 4.0.";
     let statusCode = 500;
     
-    if (err.message.includes("API key")) {
-      errorMessage = "Invalid API key";
+    if (err.message.includes("API key") || err.message.includes("authentication")) {
+      errorMessage = "Invalid VERTEX_KEY or authentication failed";
       statusCode = 401;
+    } else if (err.message.includes("billing")) {
+      errorMessage = "Imagen 4.0 requires a paid Google Cloud account with billing enabled.";
+      statusCode = 402;
     } else if (err.message.includes("quota")) {
       errorMessage = "API quota exceeded";
       statusCode = 429;
     } else if (err.message.includes("model")) {
-      errorMessage = "Model not available. Try using Imagen instead.";
+      errorMessage = "Imagen 4.0 model not available. Check if it's enabled in your project.";
       statusCode = 400;
     } else if (err.message.includes("404")) {
-      errorMessage = "Model not found. The experimental model might not be available in your region.";
+      errorMessage = "Imagen 4.0 model not found. It might not be available in your region.";
       statusCode = 404;
     }
 
     res.status(statusCode).json({ 
       error: errorMessage,
       details: process.env.NODE_ENV === 'development' ? err.message : undefined,
-      suggestion: "Try the /generate-image-imagen endpoint instead"
+      model: "imagen-4.0-generate-preview-06-06"
     });
   }
 });
 
-// 🎨 Alternative endpoint using Imagen 3 (more stable)
-app.post("/generate-image-imagen", async (req, res) => {
+// 🎨 Alternative endpoint using Imagen 3 (fallback)
+app.post("/generate-image-imagen3", async (req, res) => {
   try {
-    const { prompt, numberOfImages = 1 } = req.body;
+    const { prompt, style, numberOfImages = 1 } = req.body;
 
     if (!prompt || prompt.trim().length < 5) {
       return res.status(400).json({ 
@@ -264,35 +261,51 @@ app.post("/generate-image-imagen", async (req, res) => {
       });
     }
 
-    console.log(`🎨 Generating ${numberOfImages} image(s) with Imagen 3: ${prompt}`);
+    const imageCount = Math.min(Math.max(numberOfImages, 1), 4);
+    
+    // Style the prompt if needed
+    const styledPrompt = style && style !== "none"
+      ? `Generate an image in the style of "${style}". ${prompt}`
+      : prompt;
 
-    // METHOD 2: Using Imagen 3 (more stable and reliable)
+    console.log(`🎨 Generating ${imageCount} image(s) with Imagen 3: ${styledPrompt}`);
+
+    // Fallback to Imagen 3
     const response = await ai.models.generateImages({
-      model: 'imagen-3.0-generate-001', // ✅ Using Imagen 3
-      prompt: prompt,
+      model: 'imagen-3.0-generate-001',
+      prompt: styledPrompt,
       config: {
-        numberOfImages: Math.min(numberOfImages, 4),
+        numberOfImages: imageCount,
       },
     });
 
     const images = [];
+    let idx = 1;
+    
     for (const generatedImage of response.generatedImages) {
       const imgBytes = generatedImage.image.imageBytes;
       const base64Image = `data:image/png;base64,${imgBytes}`;
-      images.push(base64Image);
+      images.push({
+        id: idx,
+        data: base64Image,
+        filename: `imagen3-${idx}.png`
+      });
+      idx++;
     }
 
     res.json({
-      message: "🖼️ Images generated successfully with Imagen 3!",
+      message: `🖼️ ${images.length} image(s) generated successfully with Imagen 3!`,
+      prompt: styledPrompt,
       images: images,
       count: images.length,
+      model: "imagen-3.0-generate-001",
       timestamp: new Date().toISOString()
     });
 
   } catch (err) {
-    console.error("❌ Error generating image with Imagen:", err);
+    console.error("❌ Error generating image with Imagen 3:", err);
     
-    let errorMessage = "Failed to generate image with Imagen.";
+    let errorMessage = "Failed to generate image with Imagen 3.";
     let statusCode = 500;
     
     if (err.message.includes("billing")) {
@@ -305,44 +318,8 @@ app.post("/generate-image-imagen", async (req, res) => {
     
     res.status(statusCode).json({ 
       error: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-  }
-});
-
-// 🎨 Fallback endpoint using standard Gemini with image understanding (if above fails)
-app.post("/generate-image-fallback", async (req, res) => {
-  try {
-    const { prompt } = req.body;
-
-    if (!prompt || prompt.trim().length < 5) {
-      return res.status(400).json({ 
-        error: "Prompt is required and must be meaningful." 
-      });
-    }
-
-    console.log(`🎨 Attempting fallback image generation: ${prompt}`);
-
-    // METHOD 3: Using standard Gemini models (fallback)
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash", // Standard Gemini 2.0 Flash
-      contents: `Create a detailed description for generating an image: ${prompt}. Provide a comprehensive visual description that could be used by an image generation AI.`,
-    });
-
-    const description = response.candidates[0].content.parts[0].text;
-
-    res.json({
-      message: "🖼️ Image description generated (fallback mode)",
-      description: description,
-      note: "This is a text description. For actual image generation, use the primary endpoints.",
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (err) {
-    console.error("❌ Error in fallback mode:", err);
-    res.status(500).json({ 
-      error: "All image generation methods failed.",
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+      model: "imagen-3.0-generate-001"
     });
   }
 });
@@ -355,16 +332,17 @@ app.listen(PORT, () => {
   console.log(`🔥 Server running at http://localhost:${PORT}`);
   console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🎨 Available endpoints:`);
-  console.log(`   - POST /generate-image (Gemini 2.0 Flash Experimental)`);
-  console.log(`   - POST /generate-image-imagen (Imagen 3)`);
-  console.log(`   - POST /generate-image-fallback (Text description)`);
+  console.log(`   - POST /generate-image (Imagen 4.0 - Primary)`);
+  console.log(`   - POST /generate-image-imagen3 (Imagen 3.0 - Fallback)`);
   console.log(`   - GET /models (List available models)`);
   
   // Check for required environment variables
-  if (!process.env.GEMINI_API_KEY) {
-    console.error("⚠️  WARNING: GEMINI_API_KEY not found in environment variables");
+  if (!process.env.VERTEX_KEY) {
+    console.error("⚠️  WARNING: VERTEX_KEY not found in environment variables");
   }
   if (!process.env.INTERNAL_SECRET) {
     console.error("⚠️  WARNING: INTERNAL_SECRET not found in environment variables");
   }
+  
+  console.log(`🔑 Using VERTEX_KEY for authentication`);
 });
