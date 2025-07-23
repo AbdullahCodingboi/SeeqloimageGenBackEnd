@@ -192,7 +192,7 @@ app.post("/generate-image", async (req, res) => {
 
     // METHOD 1: Using Gemini 2.0 Flash Experimental (correct model name)
     const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-exp", // ✅ Fixed: Using the correct experimental model
+      model: "gemini-2.0-flash-preview-image-generation", // ✅ Fixed: Using the correct experimental model
       contents: styledPrompt,
       config: {
         responseModalities: [Modality.TEXT, Modality.IMAGE],
